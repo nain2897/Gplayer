@@ -5,9 +5,6 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -22,10 +19,8 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.4'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Generate Complete Ultimate MX Android Project
         run: |
@@ -55,6 +50,7 @@ jobs:
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
           android.useAndroidX=true
+          org.gradle.daemon=false
           EOF
 
           cat << 'EOF' > build.gradle
@@ -82,6 +78,9 @@ jobs:
 
               buildTypes {
                   release {
+                      minifyEnabled false
+                  }
+                  debug {
                       minifyEnabled false
                   }
               }
@@ -149,7 +148,6 @@ jobs:
           </manifest>
           EOF
 
-          # 1. MainActivity.java (Folder + Video List + Resume Badge)
           cat << 'EOF' > app/src/main/java/com/ultraplayer/vlc/MainActivity.java
           package com.ultraplayer.vlc;
 
@@ -465,4 +463,6 @@ jobs:
                   if (requestCode == PICK_ANY_FILE_REQ && resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
                       openPlayer(data.getData(), data.getData().getLastPathSegment(), false);
                   }
-           
+              }
+
+             
