@@ -1,0 +1,468 @@
+name: Build Ultimate MX-Style LibVLC Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
+
+      - name: Generate Complete Ultimate MX Android Project
+        run: |
+          mkdir -p app/src/main/java/com/ultraplayer/vlc
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "UltraVideoPlayer"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.ultraplayer.vlc'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.ultraplayer.vlc"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 4
+                  versionName "4.0-MX-Ultimate-Pro"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              packagingOptions {
+                  pickFirst 'lib/*/libc++_shared.so'
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'org.videolan.android:libvlc-all:3.5.1'
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Ultra MX Player Ultimate"
+                  android:supportsRtl="true"
+                  android:usesCleartextTraffic="true"
+                  android:largeHeap="true"
+                  android:theme="@style/Theme.AppCompat.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <activity
+                      android:name=".PlayerActivity"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize"
+                      android:supportsPictureInPicture="true"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="content" />
+                          <data android:scheme="file" />
+                          <data android:mimeType="video/*" />
+                      </intent-filter>
+                  </activity>
+
+              </application>
+          </manifest>
+          EOF
+
+          # 1. MainActivity.java (Folder + Video List + Resume Badge)
+          cat << 'EOF' > app/src/main/java/com/ultraplayer/vlc/MainActivity.java
+          package com.ultraplayer.vlc;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.ContentUris;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.database.Cursor;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.MediaStore;
+          import android.text.Editable;
+          import android.text.TextWatcher;
+          import android.view.LayoutInflater;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.BaseAdapter;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ListView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import androidx.annotation.NonNull;
+          import androidx.appcompat.app.AppCompatActivity;
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.content.ContextCompat;
+
+          import java.io.File;
+          import java.util.ArrayList;
+          import java.util.LinkedHashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+
+          public class MainActivity extends AppCompatActivity {
+
+              private static final int PERMISSION_REQ = 200;
+              private static final int PICK_ANY_FILE_REQ = 201;
+              public static final String PREFS_NAME = "UltraMXResumePrefs";
+
+              static class VideoItem {
+                  String title;
+                  Uri uri;
+                  long duration;
+                  long size;
+                  String folderName;
+                  String ext;
+
+                  VideoItem(String title, Uri uri, long duration, long size, String folderName, String ext) {
+                      this.title = title;
+                      this.uri = uri;
+                      this.duration = duration;
+                      this.size = size;
+                      this.folderName = folderName;
+                      this.ext = ext;
+                  }
+              }
+
+              static class FolderItem {
+                  String name;
+                  List<VideoItem> videos = new ArrayList<>();
+                  long totalSize = 0;
+
+                  FolderItem(String name) {
+                      this.name = name;
+                  }
+              }
+
+              private ListView listView;
+              private TextView tvEmptyState, tvCurrentFolder;
+              private LinearLayout folderHeaderBar;
+              private Button tabFolders, tabAllVideos;
+              private EditText etSearch;
+
+              private final List<VideoItem> allVideos = new ArrayList<>();
+              private final List<FolderItem> allFolders = new ArrayList<>();
+              private final List<Object> displayList = new ArrayList<>();
+              private BrowserAdapter adapter;
+
+              private boolean isFolderTab = true;
+              private FolderItem openedFolder = null;
+              private String searchQuery = "";
+              private SharedPreferences prefs;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+
+                  prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+                  listView = findViewById(R.id.listView);
+                  tvEmptyState = findViewById(R.id.tvEmptyState);
+                  tvCurrentFolder = findViewById(R.id.tvCurrentFolder);
+                  folderHeaderBar = findViewById(R.id.folderHeaderBar);
+                  tabFolders = findViewById(R.id.tabFolders);
+                  tabAllVideos = findViewById(R.id.tabAllVideos);
+                  etSearch = findViewById(R.id.etSearch);
+
+                  adapter = new BrowserAdapter();
+                  listView.setAdapter(adapter);
+
+                  findViewById(R.id.btnRefresh).setOnClickListener(v -> checkPermissionAndLoad());
+                  findViewById(R.id.btnPickAny).setOnClickListener(v -> pickAnyVideoFile());
+                  findViewById(R.id.btnStreamUrl).setOnClickListener(v -> showStreamDialog());
+
+                  tabFolders.setOnClickListener(v -> {
+                      isFolderTab = true;
+                      openedFolder = null;
+                      updateTabColors();
+                      refreshDisplayList();
+                  });
+
+                  tabAllVideos.setOnClickListener(v -> {
+                      isFolderTab = false;
+                      openedFolder = null;
+                      updateTabColors();
+                      refreshDisplayList();
+                  });
+
+                  findViewById(R.id.btnBackToFolders).setOnClickListener(v -> {
+                      openedFolder = null;
+                      refreshDisplayList();
+                  });
+
+                  etSearch.addTextChangedListener(new TextWatcher() {
+                      @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                      @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                          searchQuery = s.toString().trim().toLowerCase(Locale.ROOT);
+                          refreshDisplayList();
+                      }
+                      @Override public void afterTextChanged(Editable s) {}
+                  });
+
+                  listView.setOnItemClickListener((parent, view, position, id) -> {
+                      Object item = displayList.get(position);
+                      if (item instanceof FolderItem) {
+                          openedFolder = (FolderItem) item;
+                          refreshDisplayList();
+                      } else if (item instanceof VideoItem) {
+                          VideoItem video = (VideoItem) item;
+                          openPlayer(video.uri, video.title, false);
+                      }
+                  });
+
+                  checkPermissionAndLoad();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  if (adapter != null) adapter.notifyDataSetChanged();
+              }
+
+              private void updateTabColors() {
+                  tabFolders.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                          Color.parseColor(isFolderTab ? "#FF5722" : "#252535")));
+                  tabAllVideos.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                          Color.parseColor(!isFolderTab ? "#FF5722" : "#252535")));
+              }
+
+              private void checkPermissionAndLoad() {
+                  String perm = (Build.VERSION.SDK_INT >= 33)
+                          ? Manifest.permission.READ_MEDIA_VIDEO
+                          : Manifest.permission.READ_EXTERNAL_STORAGE;
+
+                  if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                      ActivityCompat.requestPermissions(this, new String[]{perm}, PERMISSION_REQ);
+                  } else {
+                      scanAllDeviceVideos();
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+                  if (requestCode == PERMISSION_REQ) {
+                      if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                          scanAllDeviceVideos();
+                      } else {
+                          tvEmptyState.setVisibility(View.VISIBLE);
+                          tvEmptyState.setText("⚠️ फोन के वीडियो दिखाने के लिए Storage/Video परमिशन आवश्यक है।\nऊपर 🔄 दबाकर परमिशन दें।");
+                      }
+                  }
+              }
+
+              private void scanAllDeviceVideos() {
+                  allVideos.clear();
+                  allFolders.clear();
+                  Map<String, FolderItem> folderMap = new LinkedHashMap<>();
+
+                  String[] projection = {
+                      MediaStore.Video.Media._ID,
+                      MediaStore.Video.Media.DISPLAY_NAME,
+                      MediaStore.Video.Media.DURATION,
+                      MediaStore.Video.Media.SIZE,
+                      MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+                      MediaStore.Video.Media.DATA
+                  };
+
+                  String sortOrder = MediaStore.Video.Media.DATE_ADDED + " DESC";
+
+                  try (Cursor cursor = getContentResolver().query(
+                          MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                          projection, null, null, sortOrder)) {
+
+                      if (cursor != null) {
+                          int idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID);
+                          int nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME);
+                          int durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION);
+                          int sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE);
+                          int bucketCol = cursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
+                          int dataCol = cursor.getColumnIndex(MediaStore.Video.Media.DATA);
+
+                          while (cursor.moveToNext()) {
+                              long id = cursor.getLong(idCol);
+                              String name = cursor.getString(nameCol);
+                              if (name == null) name = "Video_" + id;
+                              long duration = cursor.getLong(durCol);
+                              long size = cursor.getLong(sizeCol);
+
+                              String folder = (bucketCol != -1) ? cursor.getString(bucketCol) : null;
+                              if ((folder == null || folder.isEmpty()) && dataCol != -1) {
+                                  String path = cursor.getString(dataCol);
+                                  if (path != null) {
+                                      File parent = new File(path).getParentFile();
+                                      if (parent != null) folder = parent.getName();
+                                  }
+                              }
+                              if (folder == null || folder.isEmpty()) folder = "Internal Videos";
+
+                              String ext = "VID";
+                              int dot = name.lastIndexOf('.');
+                              if (dot > 0 && dot < name.length() - 1) {
+                                  ext = name.substring(dot + 1).toUpperCase(Locale.ROOT);
+                              }
+
+                              Uri contentUri = ContentUris.withAppendedId(
+                                      MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id);
+
+                              VideoItem vi = new VideoItem(name, contentUri, duration, size, folder, ext);
+                              allVideos.add(vi);
+
+                              FolderItem fi = folderMap.get(folder);
+                              if (fi == null) {
+                                  fi = new FolderItem(folder);
+                                  folderMap.put(folder, fi);
+                              }
+                              fi.videos.add(vi);
+                              fi.totalSize += size;
+                          }
+                      }
+                  } catch (Exception e) {
+                      Toast.makeText(this, "स्कैन त्रुटि: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                  }
+
+                  allFolders.addAll(folderMap.values());
+                  refreshDisplayList();
+              }
+
+              private void refreshDisplayList() {
+                  displayList.clear();
+
+                  if (isFolderTab) {
+                      if (openedFolder != null) {
+                          folderHeaderBar.setVisibility(View.VISIBLE);
+                          tvCurrentFolder.setText("📁 " + openedFolder.name + " (" + openedFolder.videos.size() + ")");
+                          for (VideoItem v : openedFolder.videos) {
+                              if (searchQuery.isEmpty() || v.title.toLowerCase(Locale.ROOT).contains(searchQuery)) {
+                                  displayList.add(v);
+                              }
+                          }
+                      } else {
+                          folderHeaderBar.setVisibility(View.GONE);
+                          for (FolderItem f : allFolders) {
+                              if (searchQuery.isEmpty() || f.name.toLowerCase(Locale.ROOT).contains(searchQuery)) {
+                                  displayList.add(f);
+                              }
+                          }
+                      }
+                  } else {
+                      folderHeaderBar.setVisibility(View.GONE);
+                      for (VideoItem v : allVideos) {
+                          if (searchQuery.isEmpty()
+                                  || v.title.toLowerCase(Locale.ROOT).contains(searchQuery)
+                                  || v.folderName.toLowerCase(Locale.ROOT).contains(searchQuery)) {
+                              displayList.add(v);
+                          }
+                      }
+                  }
+
+                  tvEmptyState.setVisibility(displayList.isEmpty() ? View.VISIBLE : View.GONE);
+                  adapter.notifyDataSetChanged();
+              }
+
+              private void pickAnyVideoFile() {
+                  Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  intent.addCategory(Intent.CATEGORY_OPENABLE);
+                  intent.setType("*/*");
+                  startActivityForResult(intent, PICK_ANY_FILE_REQ);
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == PICK_ANY_FILE_REQ && resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                      openPlayer(data.getData(), data.getData().getLastPathSegment(), false);
+                  }
+           
